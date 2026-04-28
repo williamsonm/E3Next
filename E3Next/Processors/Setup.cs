@@ -45,7 +45,7 @@ namespace E3Core.Processors
         static public Int32 _numInventorySlots = 10;
         static public Int32 _previousSpellGemThatWasCast = -1;
 		[ExposedData("Setup", "Version")]
-		public const string E3Version = "1.52_devbuild";
+		public const string E3Version = "1.54";
 		[ExposedData("Setup", "BuildDate")]
 		public static string BuildDate = string.Empty;
         public static Boolean _debug = true;
@@ -57,14 +57,13 @@ namespace E3Core.Processors
 		public static List<string> GuildListMembers = new List<string>();
         public static bool _broadcastWrites = false;
 		public static bool _disableWrites = false;
-
+	
 		public static string _serverNameForIni = "PEQTGC"; //project eq, the grand creation, where legacy e3 was born i believe.
         public static Logging _log = E3.Log;
         private static IMQ MQ = E3.MQ;
 		public static Dictionary<string, FieldInfo> ExposedDataReflectionLookup = new Dictionary<string, FieldInfo>();
 
-		public static InventoryDataFile _inventoryDataFile;
-
+	
 		public static Boolean Init()
         {
             using (_log.Trace())
@@ -87,37 +86,21 @@ namespace E3Core.Processors
 				BuildDate = BuildDate.Replace("\r\n", "");
 				MQ.Write($"Loading nE³xt v{E3Version} builddate:{BuildDate}...Mq2Mono v{Core._MQ2MonoVersion}");
 
-                //setup the library path loading, mainly used for sqlite atm
-				string MQPath = MQ.Query<String>("${MacroQuest.Path}");
-				string libPath;
-				if (!e3util.Is64Bit())
-				{
-					libPath = MQPath + @"\mono\libs\32bit\";
-				}
-				else
-				{
-					libPath = MQPath + @"\mono\libs\64bit\";
-
-				}
-			    //temp add the path for just this process/app domain
-                Environment.SetEnvironmentVariable("PATH", Environment.GetEnvironmentVariable("PATH") + ";" + libPath);
-
+             
 				InitPlugins();
                 InitSubSystems();
 
 				//after all subsystems have been init, lets init the server specific ones, as they can override events/commands
-				SeverSpecific.SeverSpecific_Init();
+				ServerSpecific.SeverSpecific_Init();
 
 				GetExposedDataMappedToDictionary();
-
-
-
-
+				
 				foreach (var command in E3.CharacterSettings.StartupCommands)
                 {
-                    MQ.Cmd(command);
-                }
-                _inventoryDataFile = new InventoryDataFile();
+				//	MQ.Write($"Startup command:{command}");
+                    MQ.Cmd(command,delayed:true);
+			    }
+            
 				//needed for IsMyGuild(namn), to supply a user generated list of guild members
 				_guildListFilePath = Settings.BaseSettings.GetSettingsFilePath("GuildList.txt");
 				if(System.IO.File.Exists(_guildListFilePath))
@@ -171,13 +154,7 @@ namespace E3Core.Processors
 
 			},"Have your toon broadcast writes out to the MQ window for a conssolidated view.");
 
-			EventProcessor.RegisterCommand("/e3debug_disablewrites", (x) =>
-			{
-
-				e3util.ToggleBooleanSetting(ref _disableWrites, "Disable Writes", x.args);
-
-
-			}, "Disable writes locally");
+		
 
 		}
 		private static void InitSubSystems()

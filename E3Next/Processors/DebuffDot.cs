@@ -2,6 +2,7 @@
 using E3Core.Data;
 using E3Core.Settings;
 using E3Core.Utility;
+using Google.Protobuf.WellKnownTypes;
 using MonoCore;
 using System;
 using System.Collections.Generic;
@@ -18,10 +19,12 @@ namespace E3Core.Processors
         private static IMQ MQ = E3.MQ;
         private static ISpawns _spawns = E3.Spawns;
         public static Dictionary<Int32, SpellTimer> _debuffdotTimers = new Dictionary<Int32, SpellTimer>();
-     
+        [ExposedData("DebuffDot","MobsToDot")]
         public static HashSet<Int32> _mobsToDot = new HashSet<int>();
-        public static HashSet<Int32> _mobsToDebuff = new HashSet<int>();
-        public static HashSet<Int64> _mobsToOffAsist = new HashSet<Int64>();
+		[ExposedData("DebuffDot", "MobsToDebuff")]
+		public static HashSet<Int32> _mobsToDebuff = new HashSet<int>();
+		[ExposedData("DebuffDot", "MobsToOffAssist")]
+		public static HashSet<Int64> _mobsToOffAsist = new HashSet<Int64>();
 		private static HashSet<Int64> _offAssistFullMobList = new HashSet<long>();
 
 		public static HashSet<Int32> _mobsToIgnoreOffAsist = new HashSet<int>();
@@ -87,23 +90,30 @@ namespace E3Core.Processors
 			using (_log.Trace())
 			{
 				_offAssistFullMobList.Clear();
-				foreach (var s in _spawns.Get().OrderBy(x => x.Distance))
-				{
-					_offAssistFullMobList.Add(s.ID);
-					if (_mobsToOffAsist.Contains(s.ID)) continue;
-					//find all mobs that are close
-					if (s.PctHps < 10) continue;
-					if (s.TypeDesc != "NPC") continue;
-					if (!s.Targetable) continue;
-					if (!s.Aggressive) continue;
-					if (s.CleanName.EndsWith("s pet")) continue;
-					if (!MQ.Query<bool>($"${{Spawn[npc id {s.ID}].LineOfSight}}")) continue;
-					if (s.Distance > 200) break;//mob is too far away, and since it is ordered, kick out.
-											   //its valid to attack!
-                    if(_mobsToIgnoreOffAsist.Contains(s.ID)) continue;
+                using (MQ.GetDelayLock())
+                {
 
-					_mobsToOffAsist.Add(s.ID);
-				}
+
+
+                    foreach (var s in _spawns.Get().OrderBy(x => x.Distance))
+                    {
+                        _offAssistFullMobList.Add(s.ID);
+                        if (_mobsToOffAsist.Contains(s.ID)) continue;
+                        //find all mobs that are close
+                        if (s.PctHps < 10) continue;
+                        if (s.Dead) continue;
+                        if (s.TypeDesc != "NPC") continue;
+                        if (!s.Targetable) continue;
+                        if (!s.Aggressive) continue;
+                        if (s.CleanName.EndsWith("s pet")) continue;
+                        if (!MQ.Query<bool>($"${{Spawn[npc id {s.ID}].LineOfSight}}")) continue;
+                        if (s.Distance > 200) break;//mob is too far away, and since it is ordered, kick out.
+                                                    //its valid to attack!
+                        if (_mobsToIgnoreOffAsist.Contains(s.ID)) continue;
+
+                        _mobsToOffAsist.Add(s.ID);
+                    }
+                }
 				List<Int64> mobIdsToRemove = new List<Int64>();
 				foreach (var mobid in _mobsToOffAsist)
 				{
@@ -398,8 +408,12 @@ namespace E3Core.Processors
              
             foreach (var spell in spells)
             {
+                if(_spawns.TryByID(mobid,out var spawn) && E3.ResistSettings!=null)
+                {
+					if (E3.ResistSettings.ShouldSkip(spell, spawn)) continue;
+                }		
                 //do we already have a timer on this spell?
-                SpellTimer s;
+				SpellTimer s;
                 if (timers.TryGetValue(mobid, out s))
                 {
                     Int64 timestamp;
@@ -501,6 +515,16 @@ namespace E3Core.Processors
 						}
 					}
 
+					//sanity check to see if the mob still has our debuff, if so just update the timer if needed
+					Casting.TrueTarget(mobid);
+					Int64 timeLeftInMS = Casting.TimeLeftOnMySpell(spell);
+
+					if (timeLeftInMS>0)
+                    {
+						UpdateDotDebuffTimers(mobid, spell, timeLeftInMS, timers);
+                        return;
+					}
+
 					var result = Casting.Cast(mobid, spell);
                     if (result == CastReturn.CAST_INTERRUPTFORHEAL)
                     {
@@ -511,55 +535,57 @@ namespace E3Core.Processors
                     //// The reason for this is, it takes X amount of time to come back from the server , and that X is unreliable as heck. 
                     //// So... for debuffs we are going to do this. If the target you have has the buff, grab its timer from the buffs object
                     //// for total time as as the Duration TLO can be unreliable depending on dot focus duration.  as in it says 72  sec when its 92 sec.
-                    Casting.TrueTarget(mobid);
+                 
+                    //bool populated = MQ.Query<Boolean>("${Target.BuffsPopulated}");
+                    //MQ.WriteDelayed($"Are Buffs Populated?:{populated}");
+					//MQ.Delay(2000, "${Target.BuffsPopulated}");
+					//populated = MQ.Query<Boolean>("${Target.BuffsPopulated}");
+					//MQ.WriteDelayed($"Are Buffs Populatedv2?:{populated}");
 
-                    MQ.Delay(2000, "${Target.BuffsPopulated}");
-                    //// we also have the situation where over 55> buffs on the ROF2 client cannot be viewed, but up to 85 or so work. 
-                    //// we are going to have to loop through the buffs and set dot timers
-                    //// if under 55< we will evict off the timer that we think we should have if we do
-                    //// if over 55> we will update but not evict... best we can do. so if a dot goes over the 55 buff cap
-                    //// but we get an invalid resist message... well... the client is going to assume it landed and set a timer for it. 
-                    //// Most of the time this won't happen, but sometimes.. well.. ya. not much I can do.
-
-                    //delay to release back to MQ to get a proper buffcount
-                    MQ.Delay(100);
+					//for good or ill, debuff data should be here by now so we can figure out how much time is left.
+					//sucks having to wait this long
+                    //  MQ.Delay(1000);
                     Int32 buffCount = MQ.Query<Int32>("${Target.BuffCount}");
                     //lets just update our cache with what is on the mob.
-                    Int64 timeLeftInMS = Casting.TimeLeftOnMySpell(spell);
-
+                    timeLeftInMS = Casting.TimeLeftOnMySpell(spell);
 					//On EQ Live 
 					//Refactored the way buffs/debuffs are stored on characters and NPCs, enabling an increase in hostile NPC's maximum from 97 to 200.
                     //This required a one-time clearing of saved buffs on mercenaries and pets, may 2022.
 
-                    
-
-					if (buffCount< e3util.MobMaxDebuffSlots && E3.CharacterSettings.Misc_VisibleDebuffsDots)
+                    //if we have any time on it, it means we can see it, so just update. If we don't see it and we are under the default cap, assume its beyond the visable range.
+                    //set a timer and continue on.
+					if (timeLeftInMS > 0)
                     {
                         UpdateDotDebuffTimers(mobid, spell, timeLeftInMS, timers);
                     }
                     else
                     {
                         Int64 totalTimeToWait;
-                        if (timeLeftInMS > 0)
+                      
+                        if (result == CastReturn.CAST_INTERRUPTED || result == CastReturn.CAST_INTERRUPTFORHEAL || result == CastReturn.CAST_FIZZLE)
                         {
-                            totalTimeToWait = timeLeftInMS;
+                            return;
+                        }
+                        if (result != CastReturn.CAST_SUCCESS)
+                        {
+                            //zero it out
+                            totalTimeToWait = 0;
                         }
                         else
                         {
-                            if (result == CastReturn.CAST_INTERRUPTED || result == CastReturn.CAST_INTERRUPTFORHEAL || result == CastReturn.CAST_FIZZLE)
+							if(E3.CharacterSettings.Misc_VisibleDebuffsDots && buffCount< e3util.MaxNPCBuffSlots)
                             {
-                                return;
-                            }
-                            if (result != CastReturn.CAST_SUCCESS)
-                            {
-                                //zero it out
-                                totalTimeToWait = 0;
-                            }
+                                totalTimeToWait = 3000;//come back in 3 seconds to check
+
+							}
                             else
                             {
-                                totalTimeToWait = (spell.DurationTotalSeconds * 1000);
-                            }
-                        }
+                                //possibly can't see the debuff, just use the spell time.
+								totalTimeToWait = (spell.DurationTotalSeconds * 1000);
+
+							}
+						}
+                       
                         UpdateDotDebuffTimers(mobid, spell, totalTimeToWait, timers);
                     }
                     //onto the next debuff/dot!

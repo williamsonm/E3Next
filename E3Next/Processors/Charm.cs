@@ -145,7 +145,7 @@ namespace E3Core.Processors
 
 			MQ.Cmd("/dropinvis");
 			MQ.Cmd($"/face fast id {_charmTargetId}");
-			MQ.Cmd("/beep");
+			e3util.Beep();
 			if (E3.CharacterSettings.Charm_PeelTank != String.Empty)
 			{
 				E3.Bots.BroadcastCommandToPerson(E3.CharacterSettings.Charm_PeelTank, "/popup Charm Break!");
@@ -155,34 +155,42 @@ namespace E3Core.Processors
 
 			foreach (var spell in E3.CharacterSettings.Charm_CharmOhShitSpells)
 			{
+				while (Casting.InGlobalCooldown())
+				{
+					MQ.Delay(50);
+				}
 				if (!Casting.Ifs(spell)) continue;
-
 				if (!Casting.CheckReady(spell)) continue;
 				var result = Casting.Cast(_charmTargetId, spell);
-				if (result != CastReturn.CAST_RESIST) break;
+				break;
+				
+				//if (result != CastReturn.CAST_RESIST) break;
 			}
 			foreach (var spell in E3.CharacterSettings.Charm_SelfDebuffSpells)
 			{
+				while (Casting.InGlobalCooldown())
+				{
+					MQ.Delay(50);
+				}
 				if (!Casting.Ifs(spell)) continue;
-
 				Casting.Cast(_charmTargetId, spell);
 			}
-
-
-
-			E3.Bots.Broadcast($"\agWaiting 4s for debuffs to happen");
 			if(debuffsAreCasting)
 			{
+				E3.Bots.Broadcast($"\agWaiting 4s for debuffs to happen");
 				MQ.Delay(_charmDebuffDelay);
 
 			}
 			E3.Bots.Broadcast($"\agDebuffs should have landed; attempting to charm");
+			while(Casting.InGlobalCooldown())
+			{
+				MQ.Delay(50);
+			}
 			if (Casting.CheckReady(E3.CharacterSettings.Charm_CharmSpells[0]))
 			{
 				var castResult = Casting.Cast(_charmTargetId, E3.CharacterSettings.Charm_CharmSpells[0]);
-				MQ.Delay(200);
+				MQ.Delay(2000, "${Me.Pet.ID}>0");
 				var petId = MQ.Query<int>("${Me.Pet.ID}");
-
 				if (petId > 0)
 				{
 					_charmTimer = Core.StopWatch.ElapsedMilliseconds;
@@ -199,7 +207,7 @@ namespace E3Core.Processors
 			{
 				return false;
 			}
-			if (s.TypeDesc == "Corpse")
+			if (s.Dead)
 			{
 				return false;
 			}
@@ -219,7 +227,7 @@ namespace E3Core.Processors
 				
 				// it's dead jim
 				E3.Bots.Broadcast($"\arDisabling charm; {_charmTargetId} is no longer a valid npc");
-				MQ.Cmd("/beep");
+				e3util.Beep();
 				_charmTargetId = 0;
 				return;
 			}
